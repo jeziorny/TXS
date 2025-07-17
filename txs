@@ -1,0 +1,213 @@
+#!/usr/bin/env python3
+import sys
+import yfinance as yf
+import pandas as pd
+from tabulate import tabulate
+import plotext as plt
+import requests
+from requests.exceptions import ConnectionError, Timeout, RequestException
+
+def format_large_number(num):
+    """Formatuje duże liczby finansowe do czytelniejszej postaci (np. $1.23B)."""
+    if pd.isna(num) or not isinstance(num, (int, float)):
+        return "N/A"
+    sign = '-' if num < 0 else ''
+    num = abs(num)
+    if num >= 1_000_000_000:
+        return f"{sign}${num / 1_000_000_000:.2f}B"
+    elif num >= 1_000_000:
+        return f"{sign}${num / 1_000_000:.2f}M"
+    elif num >= 1_000:
+        return f"{sign}${num / 1_000:.2f}K"
+    else:
+        return f"{sign}${num:.2f}"
+
+def format_volume_label(num):
+    """Formatuje etykiety wolumenu z przyrostkami (K, M, B)."""
+    if pd.isna(num) or not isinstance(num, (int, float)):
+        return ""
+    if abs(num) >= 1_000_000_000:
+        return f"{num / 1_000_000_000:.2f}B"
+    elif abs(num) >= 1_000_000:
+        return f"{num / 1_000_000:.2f}M"
+    elif abs(num) >= 1_000:
+        return f"{num / 1_000:.2f}K"
+    else:
+        return f"{num:.0f}"
+
+def calculate_yoy_change(current, previous):
+    """Oblicza procentową zmianę rok do roku (YoY)."""
+    if pd.isna(current) or pd.isna(previous) or previous == 0:
+        return "N/A"
+    change = ((current - previous) / abs(previous)) * 100
+    return f"{change:+.1f}%"
+
+def display_price_chart(ticker, company_name):
+    """Wyświetla zintegrowany wykres ceny i wolumenu w estetyce ASCII."""
+    try:
+        hist = ticker.history(period="1y")
+        if hist.empty:
+            print(f"\nBrak danych historycznych dla {company_name}. Ticker może być nieprawidłowy lub delisted.")
+            return
+
+        # Sprawdź czy mamy wymagane kolumny
+        if 'Close' not in hist.columns or 'Volume' not in hist.columns:
+            print(f"\nBrak wymaganych danych (Close/Volume) dla {company_name}.")
+            return
+            
+        # Sprawdź czy dane nie są None/NaN
+        close_data = hist['Close'].dropna()
+        volume_data = hist['Volume'].dropna()
+        
+        if close_data.empty or volume_data.empty:
+            print(f"\nBrak prawidłowych danych cenowych lub wolumenu dla {company_name}.")
+            return
+
+        plt.clf()
+        plt.subplots(2, 1)
+
+        # Subplot 1: Wykres Ceny
+        plt.subplot(1, 1)
+        plt.title(f"Roczny wykres notowań dla: {company_name}")
+        plt.plot(close_data.tolist())
+        plt.ylabel("Cena (USD)")
+        plt.grid(True, False)
+        plt.xticks([])
+
+        # Subplot 2: Wykres Wolumenu z formatowanymi etykietami
+        plt.subplot(2, 1)
+        plt.bar(volume_data.tolist())
+        
+        # Bezpieczne pobranie i obsługa yticks
+        try:
+            ticks = plt.yticks()
+            # plt.yticks() może zwracać None, tuple (positions, labels), lub listę
+            if ticks is not None:
+                # Jeśli to tuple, weź pierwszą część (positions)
+                if isinstance(ticks, tuple) and len(ticks) > 0:
+                    tick_positions = ticks[0] if ticks[0] is not None else []
+                # Jeśli to lista/array, użyj bezpośrednio
+                elif hasattr(ticks, '__iter__'):
+                    tick_positions = ticks
+                else:
+                    tick_positions = []
+                
+                # Sprawdź czy mamy prawidłowe pozycje do przetworzenia
+                if tick_positions is not None and len(tick_positions) > 0:
+                    # Filtruj None wartości z tick_positions
+                    valid_ticks = [t for t in tick_positions if t is not None]
+                    if valid_ticks:
+                        labels = [format_volume_label(tick) for tick in valid_ticks]
+                        plt.yticks(valid_ticks, labels)
+        except (TypeError, AttributeError, ValueError):
+            # Jeśli cokolwiek pójdzie nie tak z etykietami, po prostu pomiń formatowanie
+            pass
+        plt.ylabel("Wolumen")
+        plt.grid(True, False)
+
+        plt.show()
+
+    except ConnectionError:
+        print(f"\nBłąd połączenia: Sprawdź połączenie z internetem.")
+    except Timeout:
+        print(f"\nTimeout: Serwer Yahoo Finance nie odpowiada. Spróbuj ponownie.")
+    except KeyError as e:
+        print(f"\nBrak wymaganych danych w odpowiedzi API: {e}")
+    except ValueError as e:
+        print(f"\nBłąd w formatowaniu danych: {e}")
+    except Exception as e:
+        print(f"\nNieoczekiwany błąd podczas generowania wykresu: {e}")
+
+def get_financials(ticker_symbol):
+    """
+    Pobiera, sortuje i wyświetla kluczowe kwartalne wyniki finansowe wraz ze zmianą YoY
+    oraz zintegrowanym wykresem ceny i wolumenu.
+    """
+    try:
+        ticker = yf.Ticker(ticker_symbol)
+        info = ticker.info
+        
+        # Sprawdź czy ticker istnieje
+        if not info or 'symbol' not in info or info.get('regularMarketPrice') is None:
+            print(f"\nTicker '{ticker_symbol.upper()}' nie został znaleziony lub jest nieprawidłowy.")
+            print("Sprawdź pisownię symbolu (np. AAPL, GOOGL, MSFT).")
+            sys.exit(1)
+            
+        company_name = info.get('longName', ticker_symbol)
+        print(f"\nKluczowe wskaźniki finansowe dla: {company_name} ({ticker_symbol.upper()})")
+
+        financials = ticker.quarterly_financials
+        cashflow = ticker.quarterly_cashflow
+
+        if financials.empty:
+            print("Nie znaleziono kwartalnych danych finansowych dla tego tickera.")
+        else:
+            combined_data = pd.concat([financials, cashflow])
+            metric_order = [
+                'Total Revenue', 'Gross Profit', 'Operating Income', 'Operating Cash Flow',
+                'Net Income', 'Cost Of Revenue', 'Operating Expense', 'Interest Expense', 'Tax Provision'
+            ]
+            sorted_data = combined_data.loc[combined_data.index.intersection(metric_order)].reindex(metric_order)
+            
+            num_available_quarters = len(sorted_data.columns)
+            num_quarters_to_display = min(4, num_available_quarters)
+
+            table_data = []
+            headers = ["Wskaźnik (wg istotności)"] + [col.strftime('%Y-%m-%d') for col in sorted_data.columns[:num_quarters_to_display]]
+
+            for index, row in sorted_data.iterrows():
+                if not row.isnull().all():
+                    values_row = [index] + [format_large_number(val) for val in row.iloc[:num_quarters_to_display]]
+                    table_data.append(values_row)
+                    
+                    yoy_row = ["   └ YoY Change %"]
+                    for i in range(num_quarters_to_display):
+                        if i + 4 < num_available_quarters:
+                            current_val = row.iloc[i]
+                            previous_val = row.iloc[i + 4]
+                            yoy_change = calculate_yoy_change(current_val, previous_val)
+                        else:
+                            yoy_change = "N/A"
+                        yoy_row.append(yoy_change)
+                    table_data.append(yoy_row)
+
+            print(tabulate(table_data, headers=headers, tablefmt='fancy_grid'))
+
+        display_price_chart(ticker, company_name)
+
+    except ConnectionError:
+        print(f"\nBłąd połączenia: Sprawdź połączenie z internetem i spróbuj ponownie.")
+        sys.exit(1)
+    except Timeout:
+        print(f"\nTimeout: Serwer Yahoo Finance nie odpowiada. Spróbuj ponownie za chwilę.")
+        sys.exit(1)
+    except RequestException as e:
+        print(f"\nBłąd żądania HTTP: {e}")
+        sys.exit(1)
+    except KeyError as e:
+        print(f"\nBrak wymaganych danych finansowych: {e}")
+        print(f"Ticker '{ticker_symbol.upper()}' może nie mieć dostępnych danych finansowych.")
+        sys.exit(1)
+    except pd.errors.EmptyDataError:
+        print(f"\nBrak danych dla tickera '{ticker_symbol.upper()}'.")
+        sys.exit(1)
+    except ValueError as e:
+        print(f"\nBłąd w przetwarzaniu danych: {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"\nNieoczekiwany błąd: {e}")
+        print(f"Jeśli problem się powtarza, sprawdź czy ticker '{ticker_symbol.upper()}' jest prawidłowy.")
+        sys.exit(1)
+
+def main():
+    """Entry point for the TXS command-line tool."""
+    if len(sys.argv) < 2:
+        print("Użycie: txs <TICKER>")
+        print("Przykład: txs AAPL")
+        sys.exit(1)
+
+    ticker_arg = sys.argv[1]
+    get_financials(ticker_arg)
+
+if __name__ == "__main__":
+    main()

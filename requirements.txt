@@ -1,0 +1,7 @@
+# TXS - Terminal Stock Analysis Tool
+# Core dependencies for financial data and visualization
+
+yfinance>=0.2.0
+pandas>=1.5.0
+tabulate>=0.9.0
+plotext>=5.0.0
