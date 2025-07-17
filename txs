@@ -23,17 +23,46 @@ def format_large_number(num):
         return f"{sign}${num:.2f}"
 
 def format_volume_label(num):
-    """Formatuje etykiety wolumenu z przyrostkami (K, M, B)."""
+    """Formatuje etykiety wolumenu z przyrostkami (K, M, B) - max 4 znaki."""
     if pd.isna(num) or not isinstance(num, (int, float)):
         return ""
-    if abs(num) >= 1_000_000_000:
-        return f"{num / 1_000_000_000:.2f}B"
-    elif abs(num) >= 1_000_000:
-        return f"{num / 1_000_000:.2f}M"
-    elif abs(num) >= 1_000:
-        return f"{num / 1_000:.2f}K"
+    
+    abs_num = abs(num)
+    sign = '-' if num < 0 else ''
+    
+    if abs_num >= 1_000_000_000:
+        # Miliardy: 1.2B, 12B, 123B
+        val = abs_num / 1_000_000_000
+        if val >= 100:
+            return f"{sign}{val:.0f}B"
+        elif val >= 10:
+            return f"{sign}{val:.0f}B"
+        else:
+            return f"{sign}{val:.1f}B"
+    elif abs_num >= 1_000_000:
+        # Miliony: 1.2M, 12M, 123M
+        val = abs_num / 1_000_000
+        if val >= 100:
+            return f"{sign}{val:.0f}M"
+        elif val >= 10:
+            return f"{sign}{val:.0f}M"
+        else:
+            return f"{sign}{val:.1f}M"
+    elif abs_num >= 1_000:
+        # Tysiące: 1.2K, 12K, 123K
+        val = abs_num / 1_000
+        if val >= 100:
+            return f"{sign}{val:.0f}K"
+        elif val >= 10:
+            return f"{sign}{val:.0f}K"
+        else:
+            return f"{sign}{val:.1f}K"
     else:
-        return f"{num:.0f}"
+        # Poniżej 1000: 1, 12, 123, 999
+        if abs_num >= 1000:
+            return f"{sign}{abs_num:.0f}"
+        else:
+            return f"{sign}{abs_num:.0f}"
 
 def calculate_yoy_change(current, previous):
     """Oblicza procentową zmianę rok do roku (YoY)."""
@@ -41,6 +70,15 @@ def calculate_yoy_change(current, previous):
         return "N/A"
     change = ((current - previous) / abs(previous)) * 100
     return f"{change:+.1f}%"
+
+def format_date_roman(date):
+    """Formatuje datę z miesiącami rzymskimi (I-XII), styczeń = rok."""
+    month_to_roman = {
+        1: str(date.year),  # Styczeń = rok
+        2: "II", 3: "III", 4: "IV", 5: "V", 6: "VI",
+        7: "VII", 8: "VIII", 9: "IX", 10: "X", 11: "XI", 12: "XII"
+    }
+    return month_to_roman.get(date.month, str(date.month))
 
 def display_price_chart(ticker, company_name):
     """Wyświetla zintegrowany wykres ceny i wolumenu w estetyce ASCII."""
@@ -66,44 +104,47 @@ def display_price_chart(ticker, company_name):
         plt.clf()
         plt.subplots(2, 1)
 
+        # Przygotuj etykiety osi X z rzymskimi miesiącami
+        dates = close_data.index
+        # Wybierz co n-tą datę dla czytelności (np. co 30 dni)
+        step = max(1, len(dates) // 12)  # Maksymalnie 12 etykiet
+        selected_dates = dates[::step]
+        date_labels = [format_date_roman(date) for date in selected_dates]
+        date_positions = list(range(0, len(close_data), step))[:len(date_labels)]
+
         # Subplot 1: Wykres Ceny
         plt.subplot(1, 1)
         plt.title(f"Roczny wykres notowań dla: {company_name}")
         plt.plot(close_data.tolist())
         plt.ylabel("Cena (USD)")
         plt.grid(True, False)
-        plt.xticks([])
+        plt.xticks(date_positions, date_labels)
 
         # Subplot 2: Wykres Wolumenu z formatowanymi etykietami
         plt.subplot(2, 1)
         plt.bar(volume_data.tolist())
         
-        # Bezpieczne pobranie i obsługa yticks
+        # Stwórz własne czytelne etykiety dla osi Y
         try:
-            ticks = plt.yticks()
-            # plt.yticks() może zwracać None, tuple (positions, labels), lub listę
-            if ticks is not None:
-                # Jeśli to tuple, weź pierwszą część (positions)
-                if isinstance(ticks, tuple) and len(ticks) > 0:
-                    tick_positions = ticks[0] if ticks[0] is not None else []
-                # Jeśli to lista/array, użyj bezpośrednio
-                elif hasattr(ticks, '__iter__'):
-                    tick_positions = ticks
-                else:
-                    tick_positions = []
-                
-                # Sprawdź czy mamy prawidłowe pozycje do przetworzenia
-                if tick_positions is not None and len(tick_positions) > 0:
-                    # Filtruj None wartości z tick_positions
-                    valid_ticks = [t for t in tick_positions if t is not None]
-                    if valid_ticks:
-                        labels = [format_volume_label(tick) for tick in valid_ticks]
-                        plt.yticks(valid_ticks, labels)
+            # Oblicz rozumne pozycje ticks na podstawie zakresu danych
+            min_vol = volume_data.min()
+            max_vol = volume_data.max()
+            
+            # Stwórz 5 równo rozmieszczonych wartości
+            tick_positions = []
+            for i in range(5):
+                tick_val = min_vol + (max_vol - min_vol) * i / 4
+                tick_positions.append(tick_val)
+            
+            # Stwórz czytelne etykiety
+            labels = [format_volume_label(tick) for tick in tick_positions]
+            plt.yticks(tick_positions, labels)
         except (TypeError, AttributeError, ValueError):
             # Jeśli cokolwiek pójdzie nie tak z etykietami, po prostu pomiń formatowanie
             pass
         plt.ylabel("Wolumen")
         plt.grid(True, False)
+        plt.xticks(date_positions, date_labels)
 
         plt.show()
 
@@ -141,8 +182,15 @@ def get_financials(ticker_symbol):
 
         if financials.empty:
             print("Nie znaleziono kwartalnych danych finansowych dla tego tickera.")
+            print("Wyświetlam tylko wykres cenowy.")
+            display_price_chart(ticker, company_name)
+            return
         else:
             combined_data = pd.concat([financials, cashflow])
+            
+            # Posortuj kolumny chronologicznie od najnowszych do najstarszych
+            combined_data = combined_data.sort_index(axis=1, ascending=False)
+            
             metric_order = [
                 'Total Revenue', 'Gross Profit', 'Operating Income', 'Operating Cash Flow',
                 'Net Income', 'Cost Of Revenue', 'Operating Expense', 'Interest Expense', 'Tax Provision'
@@ -151,6 +199,13 @@ def get_financials(ticker_symbol):
             
             num_available_quarters = len(sorted_data.columns)
             num_quarters_to_display = min(4, num_available_quarters)
+            
+            # Sprawdź czy mamy wystarczająco danych dla YoY (potrzebujemy minimum 8 kwartałów)
+            min_quarters_for_yoy = num_quarters_to_display + 4
+            if num_available_quarters < min_quarters_for_yoy:
+                print(f"\nUwaga: Mamy tylko {num_available_quarters} kwartałów danych. ")
+                print(f"Dla pełnych obliczeń YoY potrzeba {min_quarters_for_yoy} kwartałów.")
+                print("Niektóre wartości YoY mogą być niedostępne.\n")
 
             table_data = []
             headers = ["Wskaźnik (wg istotności)"] + [col.strftime('%Y-%m-%d') for col in sorted_data.columns[:num_quarters_to_display]]
@@ -162,9 +217,15 @@ def get_financials(ticker_symbol):
                     
                     yoy_row = ["   └ YoY Change %"]
                     for i in range(num_quarters_to_display):
-                        if i + 4 < num_available_quarters:
+                        # Znajdź ten sam kwartał rok wcześniej
+                        current_date = sorted_data.columns[i]
+                        # Oblicz datę rok wcześniej (ten sam kwartał)
+                        year_ago_date = current_date - pd.DateOffset(years=1)
+                        
+                        # Sprawdź czy mamy dane dla tego kwartału rok wcześniej
+                        if year_ago_date in sorted_data.columns:
                             current_val = row.iloc[i]
-                            previous_val = row.iloc[i + 4]
+                            previous_val = row.loc[year_ago_date]
                             yoy_change = calculate_yoy_change(current_val, previous_val)
                         else:
                             yoy_change = "N/A"
